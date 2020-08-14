@@ -1,0 +1,297 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Created on Tue Jul 21 21:28:10 2020
+
+@author: nickkish
+help from Ken Jee
+"""
+
+import pandas as pd
+import numpy as np
+
+# reading in the data to the primary dataframe variables
+df_games = pd.read_csv('vgsales-12-4-2019-short.csv')
+df_meta = pd.read_csv('metacritic_games.csv')
+df_info = pd.read_csv('game_info.csv')
+df_twitch = pd.read_csv('datasets_770386_1330239_Most_watched_games_on_Twitch.csv')
+
+# analyzing each dataframe's columns and null value percentages
+df_games.info()
+df_games.isnull().sum() / df_games.shape[0]
+
+df_meta.info()
+df_meta.players.value_counts()
+df_meta.isnull().sum() / df_meta.shape[0]
+
+df_info.info()
+df_info.isnull().sum() / df_info.shape[0]
+
+df_twitch.info()
+df_twitch.isnull().sum() / df_twitch.shape[0]
+
+######
+
+# Each game in the data either had values in Total Shipped or Global Sales, but not both.
+# I created a third variable called Units Shipped taking the non-null value between them
+
+# creating the Units Shipped variable 
+df_games['Total_Shipped'] = df_games['Total_Shipped'].astype(str)
+df_games['Global_Sales'] = df_games['Global_Sales'].astype(str)
+
+df_games['Units_Shipped'] = df_games.apply(lambda x: x['Total_Shipped'] if 
+                                           x['Total_Shipped'] != 'nan'
+                                           else x['Global_Sales'], axis = 1)
+
+df_games['Total_Shipped'] = pd.to_numeric(df_games['Total_Shipped'], errors='coerce')
+df_games['Global_Sales'] = pd.to_numeric(df_games['Global_Sales'], errors='coerce')
+df_games['Units_Shipped'] = pd.to_numeric(df_games['Units_Shipped'], errors='coerce')
+
+######
+
+# I used the metacritic dataframe to gather information on multiplayer status
+# and the number of platforms available per game
+
+# changing the name column in the metacritic dataframe to match the main dataframe
+df_meta = df_meta.rename(columns={'name':'Name'})
+
+# chaning the players column to a string and remove spaces
+df_meta['players'] = df_meta['players'].astype(str)
+df_meta['players'] = df_meta['players'].apply(lambda x: x.rstrip())
+
+# creating a function to delineate multiplayer status into numbers
+def fix(x):
+    if x == 'nan':
+        return 1
+    elif (x == 'No Online Multiplayer' or x == '1 Player'):
+        return 2
+    elif (x == '1-2' or x == '1-4' or x == '2  Online' or x == 'Up to 4' or 
+               x == '4  Online' or x == '2' or x == '1-3' or x == 'Up to 3' or x == '3  Online'):
+        return 3
+    else:
+        return 4
+
+# apply the fix function to the metacritic dataframe
+df_meta['players'] = df_meta['players'].apply(fix)
+
+# creating a new dataframe containing names and the coded numbers for multiplayer status
+df_multi = df_meta[['Name','players']]
+df_multi = df_multi.groupby('Name').max()
+
+# creating a function to turn the coded numbers into descriptors
+def title(x):
+    if x == 1:
+        return 'No info'
+    elif x == 2:
+        return 'Single Player'
+    elif x == 3:
+        return 'Small Multiplayer'
+    else:
+        return 'Large Multiplayer'
+
+# applying the title function to the multiplayer dataframe
+df_multi['players'] = df_multi['players'].apply(title)
+df_multi = df_multi.rename(columns={'players':'multiplayer?'})
+
+# creating a new dataframe with the count of platforms available per game
+df_plat = df_meta[['Name','platform']]
+df_plat = df_plat.groupby('Name').count()
+df_plat = df_plat.rename(columns={'platform':'num_platform'})
+
+######
+
+# I created two dataframes summing the publisher and developer total units shipped.
+# This would help in comparing small and large publishers and developers
+
+# creating the publisher dataframe
+df_pubsum = df_games[['Publisher','Units_Shipped']].copy()
+df_pubsum = df_pubsum.groupby('Publisher').sum()
+df_pubsum = df_pubsum.rename(columns={'Units_Shipped':'pubsum'})
+
+# creating the developer dataframe
+df_devsum = df_games[['Developer','Units_Shipped']].copy()
+df_devsum = df_devsum.groupby('Developer').sum()
+df_devsum = df_devsum.rename(columns={'Units_Shipped':'devsum'})
+
+######
+
+# I merged the newly created dataframes onto the main dataframe
+
+# merging
+df_games = pd.merge(df_games, df_plat, on = 'Name', how = 'left')
+df_games = pd.merge(df_games, df_multi, on = 'Name', how = 'left')
+df_games = pd.merge(df_games, df_pubsum, on = 'Publisher', how = 'left')
+df_games = pd.merge(df_games, df_devsum, on = 'Developer', how = 'left')
+
+######
+
+# I merged CPI data to the main dataframe and exported a new dataframe to excel
+# to do some calculations for revenue
+        
+# importing and merging the CPI data
+df_cpi = pd.read_excel('CPI Data 2.xlsx')
+df_cpi.columns = ['Year', 'cpi']
+df_games = pd.merge(df_games, df_cpi, on = 'Year')
+
+# creating a dataframe with no nulls to be exported to excel
+df_final = df_games.loc[pd.notna(df_games.Units_Shipped), :].copy()
+df_final.isnull().sum() / df_final.shape[0]
+
+# In the Excel file, I assumed each game would have an average price of $50 in
+# its first year. In each consecutive year, the price would decrease by $10 until
+# it reached $10 perpetually. I assumed that 50% of all its units sold were 
+# shipped in the first year. For every consecutive year (n), the units sold
+# would be the total units multiplied by 0.5^n. I distributed any remaining units
+# evenly over the game's lifetime. The final result was the sum of the products of
+# the price in any given year and the units sold in any given year in a game's 
+# lifetime. These numbers were then adjusted for inflation with the CPI metrics.
+
+df_xlsx = df_final[['Name','Units_Shipped','cpi','age','Platform']]
+df_xlsx.to_excel('df_xlsx.xlsx')
+
+# creating a column to merge on in the excel dataframe
+df_yearly = pd.read_excel('Game Yearly Sales.xlsx')
+df_yearly = df_yearly.rename(columns={'Name + Platform':'nameplat'})
+
+# creating a column to merge on in the main dataframe
+df_final['nameplat'] = df_final[['Name', 'Platform']].apply(lambda x: ' '.join(x), axis=1)
+
+# merging the excel dataframe and the main dataframe
+df_final = pd.merge(df_final, df_yearly, on = 'nameplat')
+df_final = df_final.drop_duplicates(['Name','Platform'],keep= 'last')
+
+######
+
+# I created a dataframe for non-exclusive games and I cleaned the twitch dataframe
+
+# creating the non-exclusive dataframe
+df_nonexclusive = df_final[df_final['num_platform'] > 1]
+
+# cleaning the twitch dataframe
+df_twitch.drop(df_twitch.columns[0], axis=1, inplace=True)
+df_twitch.drop(df_twitch.columns[0], axis=1, inplace=True)
+df_twitch = df_twitch.rename(columns={'Game':'Name'})
+df_twitch = pd.merge(df_twitch, df_games, on = 'Name', how = 'left')
+df_twitch = df_twitch.drop_duplicates(['Name'],keep= 'last')
+
+# exporting the dataframes as csv's to analyze them in Tableau and create visualizations
+df_final.to_csv('df_final.csv')
+df_nonexclusive.to_csv('df_nonexclusive.csv')
+df_twitch.to_excel('df_twitch.xlsx')
+
+######
+
+# I prepare the model dataframe and add the dummy variables for genre
+
+# creating the model dataframe
+df_model = df_nonexclusive[df_nonexclusive['Year'] > 2013]
+
+# removing the top and bottome 10% of earners
+df_model = df_model[(df_model['Units_Shipped'] < df_model['Units_Shipped'].quantile(0.90))
+                             & (df_model['Units_Shipped'] > 
+                                df_model['Units_Shipped'].quantile(0.1))]
+
+# renaming the column to merge
+df_info = df_info.rename(columns={'name':'Name'})
+
+# merging the model dataframe and the info dataframe with extra genres
+df_model = pd.merge(df_model, df_info, on = 'Name', how = 'left')
+
+# creating a genre list column to more easily extract first, second, and third
+# listed genres into their own columns
+df_model['Genre'] = df_model['Genre'].astype(str)
+df_model['genres'] = df_model['genres'].astype(str)
+df_model['genre_list'] = df_model.apply(lambda x: x['genres'].split('||') if '||' in x['genres'] 
+                                               else [x['Genre']], axis = 1)
+
+# creating columns for the genres
+df_model['genre1'] = df_model.apply(lambda x: x['genre_list'][0], axis = 1)
+df_model['genre2'] = df_model.apply(lambda x: x['genre_list'][1] if 
+                                  len(x['genre_list']) > 1 else np.NaN, axis = 1)
+df_model['genre3'] = df_model.apply(lambda x: x['genre_list'][2] if 
+                                  len(x['genre_list']) > 2 else np.NaN, axis = 1)
+
+# creating the genre dummy variables
+genre1_dums = pd.get_dummies(df_model['genre1'])
+genre2_dums = pd.get_dummies(df_model['genre2'])
+genre3_dums = pd.get_dummies(df_model['genre3'])
+genre_dumlist = [genre1_dums,genre2_dums,genre3_dums]
+genre_concat = pd.concat(genre_dumlist).groupby(level=0).any().astype(int)
+
+# removing redundant role-playing genres
+genre_concat['Role-Playing'] = (genre_concat['Role-Playing'] + genre_concat['RPG'])
+genre_concat.drop('RPG', axis=1, inplace=True)
+
+# removing redundant platforming genres
+genre_concat['Platformer'] = (genre_concat['Platform'] + genre_concat['Platformer'])
+genre_concat.drop('Platform', axis=1, inplace=True)
+
+# dropping the misc genre
+genre_concat.drop('Misc', axis=1, inplace=True)
+
+# merging the dummy variables to the model dataframe
+df_model = pd.concat([df_model, genre_concat], axis = 1)
+
+######
+
+# I create the main dependent variable and the constant for the model
+
+# getting the log of units shipped
+df_model['log_units'] = np.log(df_model['Units_Shipped'] + 1)
+
+# adding a constant
+df_model['constant'] = 1
+
+######
+
+# I check to make sure my model's variables aren't too inter-correlated
+
+# checking inter-correlation, credit to Ken Jee
+numeric = df_model._get_numeric_data()
+
+import seaborn as sns
+
+corrdata = numeric
+
+corr = corrdata.corr()
+ax = sns.heatmap(
+    corr, 
+    vmin=-1, vmax=1, center=0,
+    cmap=sns.diverging_palette(20, 220, n=200),
+    square=True
+)
+ax.set_xticklabels(
+    ax.get_xticklabels(),
+    rotation=45,
+    horizontalalignment='right'
+)
+
+######
+
+# I use multiple linear regression to analyze my independent variables
+
+# multiple linear regression on all the genres
+from sklearn.model_selection import train_test_split
+import statsmodels.api as sm
+import matplotlib.pyplot as plt
+
+X1 = df_model[['constant','Action','Action-Adventure','Arcade',
+               'Casual','Fighting','MMO','Music','Party','Platformer',
+               'Puzzle','Racing','Role-Playing','Shooter','Simulation','Sports',
+               'Strategy','Visual Novel','Family','Indie','Educational']]
+y1 = df_model.log_units.values
+
+X_train1, X_test1, y_train1, y_test1 = train_test_split(X1, y1, test_size=0.3, random_state=0)
+
+reg_sm1 = sm.OLS(y_train1, X_train1).fit()
+reg_sm1.summary()
+
+# creating the partial regression plots
+fig = plt.figure(figsize=(12,8))
+fig = sm.graphics.plot_partregress_grid(reg_sm1, fig=fig)
+
+# creating the residual distribution plots
+plt.hist(reg_sm1.resid_pearson)
+plt.xlabel('Residual')
+plt.ylabel('# of Data Points')
+plt.title('Residual Distribution Plot')
